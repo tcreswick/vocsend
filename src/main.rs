@@ -35,13 +35,17 @@ USAGE
 QUICK START
   One-way. Start the receiver, then the sender. Nothing is sent back, so the
   receiving machine never makes a sound:
-      machine B:   vocsend rx
-      machine A:   vocsend tx key.pub
+      receiver$ vocsend rx
+      sender$   vocsend tx key.pub
 
   Negotiated. The two machines agree on the fastest speed that works and
   every block is acknowledged and repeated if needed. Start in either order:
-      machine B:   vocsend rx negotiate
-      machine A:   vocsend tx negotiate backup.tar.gz
+      receiver$ vocsend rx negotiate
+      sender$   vocsend tx negotiate backup.tar.gz
+
+  Encrypted, to one receiver among several:
+      laptop$   vocsend rx --encrypt --address laptop
+      sender$   vocsend tx notes.txt --encrypt --address laptop
 
 WHAT IS SENT
   vocsend tx FILE        the file, and its name
@@ -101,7 +105,7 @@ OPTIONS
 SPEED LEVELS
   level    1    2    3    4    5    6    7    8    9   10
   bits/s   8   18   25   36   51   64   67   83   91  104
-  Run `vocsend rx test` on one machine and `vocsend tx test` on the other
+  Run `vocsend rx test` on the receiver and `vocsend tx test` on the sender
   to see a live table of which levels arrive intact between them.
 
 CHECKING IT ARRIVED

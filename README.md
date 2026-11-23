@@ -3,9 +3,9 @@
 Send small amounts of data from one computer to another by sound, through
 the noise suppression that stops other tools from working.
 
-```
-machine B$ vocsend rx
-machine A$ vocsend tx id_ed25519.pub
+```console
+receiver$ vocsend rx
+sender$ vocsend tx id_ed25519.pub
 ```
 
 By Tim Creswick. MIT licence.
@@ -48,45 +48,79 @@ seconds at the default one-way speed.
 
 ## Examples
 
+In these, `sender$` and `receiver$` are the prompts on the two machines.
+Start the receiver first unless it says otherwise.
+
 **Quick-send a public key from one box to another.** One-way: the receiving
 machine never makes a sound.
 
-```
-machine B$ vocsend rx
-machine A$ vocsend tx ~/.ssh/id_ed25519.pub
+```console
+receiver$ vocsend rx
+sender$ vocsend tx ~/.ssh/id_ed25519.pub
 ```
 
-The receiver saves `id_ed25519.pub` in the current directory.
+The receiver saves `id_ed25519.pub` in its current directory. Both sides
+print the same short fingerprint, so you can see it arrived intact.
 
 **Send a file, negotiated.** The two machines agree on the fastest speed
 the path can take, and every block is acknowledged and repeated if needed.
 Start them in either order.
 
+```console
+receiver$ vocsend rx negotiate
+sender$ vocsend tx negotiate release.sig
 ```
-machine B$ vocsend rx negotiate
-machine A$ vocsend tx negotiate release.sig
+
+**Send to several machines at once.** A one-way transmission is a
+broadcast: every receiver in earshot gets its own copy.
+
+```console
+receiver-1$ vocsend rx
+receiver-2$ vocsend rx
+receiver-3$ vocsend rx
+sender$ vocsend tx ca-certificate.pem
+```
+
+**Send with encryption.** Both sides are asked for the shared key, which is
+never shown or sent.
+
+```console
+receiver$ vocsend rx --encrypt
+Key:
+sender$ vocsend tx secret.txt --encrypt
+Key:
+```
+
+Or give the key directly, which is handier in scripts but visible in the
+process list and shell history:
+
+```console
+receiver$ vocsend rx --encrypt 'correct horse battery staple'
+sender$ vocsend tx secret.txt --encrypt 'correct horse battery staple'
+```
+
+**Send to one machine among several.** With encryption, `--address` names
+the receiver a message is for. The others ignore it.
+
+```console
+laptop$ vocsend rx --encrypt --address laptop
+desktop$ vocsend rx --encrypt --address desktop
+sender$ vocsend tx notes.txt --encrypt --address laptop
 ```
 
 **Stream between hosts.** Each line is sent when you press Enter and
-appears on the other side.
+appears on the other side. End with Ctrl-D.
 
-```
-machine B$ vocsend rx --stream
-machine A$ vocsend tx --stream
+```console
+receiver$ vocsend rx --stream
+sender$ vocsend tx --stream
 ```
 
 **Pipe anything.**
 
-```
-machine B$ vocsend rx | sha256sum
-machine A$ gpg --export --armor me@example.com | vocsend tx
-```
-
-**Encrypt with a shared key.** Both sides are asked for it.
-
-```
-machine B$ vocsend rx --encrypt
-machine A$ vocsend tx secret.txt --encrypt
+```console
+receiver$ vocsend rx | sha256sum
+sender$ gpg --export --armor me@example.com | vocsend tx
 ```
 
 ## Install
@@ -94,7 +128,7 @@ machine A$ vocsend tx secret.txt --encrypt
 Download a binary for your system from the
 [releases page](https://github.com/tcreswick/vocsend/releases), or build it:
 
-```
+```bash
 git clone https://github.com/tcreswick/vocsend
 cd vocsend
 cargo build --release
@@ -116,7 +150,7 @@ For sound, vocsend uses tools the system already has:
 
 ### Shell completion
 
-```
+```bash
 vocsend completions bash > ~/.local/share/bash-completion/completions/vocsend
 vocsend completions zsh  > "${fpath[1]}/_vocsend"
 vocsend completions fish > ~/.config/fish/completions/vocsend.fish
@@ -187,9 +221,9 @@ syllables, with less error correction.
 
 ### Finding out what works
 
-```
-machine B$ vocsend rx test
-machine A$ vocsend tx test
+```console
+receiver$ vocsend rx test
+sender$ vocsend tx test
 ```
 
 The sender loops through the levels with a known burst at each. The receiver
@@ -228,10 +262,10 @@ sign the data with an established tool before sending it as well.
 With several receivers in earshot, `--address` says which one a message is
 for:
 
-```
-laptop$   vocsend rx --encrypt --address laptop
-desktop$  vocsend rx --encrypt --address desktop
-sender$   vocsend tx notes.txt --encrypt --address laptop
+```console
+laptop$ vocsend rx --encrypt --address laptop
+desktop$ vocsend rx --encrypt --address desktop
+sender$ vocsend tx notes.txt --encrypt --address laptop
 ```
 
 Only the laptop takes it; the desktop ignores it without trying its key.
