@@ -1,0 +1,22 @@
+[package]
+name = "vocsend"
+version = "0.1.0"
+edition = "2021"
+authors = ["Tim Creswick"]
+description = "Send small amounts of data between computers by sound, through noise suppression"
+license = "MIT"
+repository = "https://github.com/tcreswick/vocsend"
+readme = "README.md"
+keywords = ["audio", "modem", "air-gap", "data-transfer"]
+categories = ["command-line-utilities"]
+
+# No dependencies: everything, including the signal processing, error
+# correction, compression and encryption, is in this repository.
+[dependencies]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
