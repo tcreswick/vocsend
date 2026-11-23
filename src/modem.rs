@@ -91,15 +91,51 @@ fn preamble() -> &'static Preamble {
 
 // ---------------------------------------------------------- control packets
 
-/// Fields in a control packet, each four bits: kind, two arguments, flags,
-/// and an eight-bit check.
-pub const FIELDS: usize = 6;
-/// Control syllables per packet: two bits each.
-pub const CONTROL_SYLLABLES: usize = FIELDS * 2;
+/// The protocol this build speaks.
+pub const PROTOCOL: u8 = 1;
+/// The oldest receiver that can understand what this build sends. A receiver
+/// cannot know whether a newer sender is still compatible with it, so the
+/// sender says.
+pub const MIN_RECEIVER: u8 = 1;
+/// The oldest sender this build can receive from.
+pub const MIN_SENDER: u8 = 1;
 
-fn check(kind: u8, a: u8, b: u8, flags: u8) -> u8 {
+/// Kinds of control packet. The sender says CALL, RAMP, TEST, DATA, PROBE and
+/// BYE; a receiver, only ever in negotiate mode, says the rest.
+pub mod kind {
+    pub const CALL: u8 = 1;
+    pub const ANSWER: u8 = 2;
+    pub const RAMP: u8 = 3;
+    pub const REPORT: u8 = 4;
+    pub const TEST: u8 = 5;
+    pub const ACCEPT: u8 = 6;
+    pub const DATA: u8 = 7;
+    pub const ACK: u8 = 8;
+    pub const NAK: u8 = 9;
+    pub const PROBE: u8 = 10;
+    pub const BYE: u8 = 11;
+    pub const REFUSE: u8 = 12;
+
+    /// Packets from the sender carry more than replies do.
+    pub fn from_sender(kind: u8) -> bool {
+        matches!(kind, CALL | RAMP | TEST | DATA | PROBE | BYE)
+    }
+
+    pub fn is_reply(kind: u8) -> bool {
+        matches!(kind, ANSWER | REPORT | ACCEPT | ACK | NAK | REFUSE)
+    }
+}
+
+/// Control syllables (two bits each) in a reply: kind, two arguments and an
+/// eight-bit check.
+pub const REPLY_SYLLABLES: usize = 10;
+/// ...and in a packet from the sender, which adds flags, the two protocol
+/// versions and the receiver's address.
+pub const SENDER_SYLLABLES: usize = 20;
+
+fn check(fields: &[u8]) -> u8 {
     let mut crc = 0x5Au8;
-    for v in [kind, a, b, flags] {
+    for &v in fields {
         crc ^= v << 4 | (v ^ 0x9);
         for _ in 0..8 {
             crc = if crc & 0x80 != 0 { crc << 1 ^ 0x07 } else { crc << 1 };
@@ -113,27 +149,70 @@ pub struct Packet {
     pub kind: u8,
     pub a: u8,
     pub b: u8,
+    /// From the sender only: what it is doing (encrypting, negotiating, streaming).
     pub flags: u8,
+    /// From the sender only: the protocol it speaks.
+    pub version: u8,
+    /// From the sender only: the oldest receiver protocol that can follow it.
+    pub needs: u8,
+    /// From the sender only: which receiver this is for; 0 means anyone.
+    pub address: u8,
 }
 
 impl Packet {
-    pub fn new(kind: u8, a: usize, b: usize, flags: u8) -> Packet {
-        Packet { kind, a: a as u8 & 15, b: b as u8 & 15, flags: flags & 15 }
+    /// A packet from the sender.
+    pub fn sender(kind: u8, a: usize, b: usize, flags: u8, address: u8) -> Packet {
+        Packet { kind, a: a as u8 & 15, b: b as u8 & 15, flags: flags & 15, version: PROTOCOL, needs: MIN_RECEIVER, address }
+    }
+
+    /// A reply from the receiver.
+    pub fn reply(kind: u8, a: usize, b: usize) -> Packet {
+        Packet { kind, a: a as u8 & 15, b: b as u8 & 15, flags: 0, version: 0, needs: 0, address: 0 }
+    }
+
+    fn fields(&self) -> Vec<u8> {
+        if kind::from_sender(self.kind) {
+            vec![self.kind, self.a, self.b, self.flags, self.version & 15, self.needs & 15, self.address >> 4, self.address & 15]
+        } else {
+            vec![self.kind, self.a, self.b]
+        }
     }
 
     fn digits(&self) -> Vec<usize> {
-        let c = check(self.kind, self.a, self.b, self.flags);
-        [self.kind, self.a, self.b, self.flags, c >> 4, c & 15]
-            .iter()
-            .flat_map(|&f| [(f >> 2) as usize, (f & 3) as usize])
-            .collect()
+        let mut fields = self.fields();
+        let c = check(&fields);
+        fields.extend([c >> 4, c & 15]);
+        fields.iter().flat_map(|&f| [(f >> 2) as usize, (f & 3) as usize]).collect()
+    }
+
+    /// How many control syllables a packet has, judging by its first two
+    /// (which give the kind). None if they are not the start of any packet.
+    pub fn length(first: &[usize]) -> Option<usize> {
+        let kind = (first.first()? << 2 | first.get(1)?) as u8;
+        if kind::from_sender(kind) {
+            Some(SENDER_SYLLABLES)
+        } else if kind::is_reply(kind) {
+            Some(REPLY_SYLLABLES)
+        } else {
+            None
+        }
     }
 
     /// From the control syllables as heard, if the check passes.
     pub fn parse(digits: &[usize]) -> Option<Packet> {
+        if Packet::length(digits)? != digits.len() {
+            return None;
+        }
         let f: Vec<u8> = digits.chunks(2).map(|d| (d[0] << 2 | d[1]) as u8).collect();
-        (f.len() == FIELDS && check(f[0], f[1], f[2], f[3]) == f[4] << 4 | f[5])
-            .then(|| Packet { kind: f[0], a: f[1], b: f[2], flags: f[3] })
+        let (body, sum) = f.split_at(f.len() - 2);
+        if check(body) != sum[0] << 4 | sum[1] {
+            return None;
+        }
+        Some(if body.len() == 8 {
+            Packet { kind: f[0], a: f[1], b: f[2], flags: f[3], version: f[4], needs: f[5], address: f[6] << 4 | f[7] }
+        } else {
+            Packet { kind: f[0], a: f[1], b: f[2], flags: 0, version: 0, needs: 0, address: 0 }
+        })
     }
 
     /// The sound of this packet, followed without a break by `sections` of
@@ -156,9 +235,10 @@ impl Packet {
 }
 
 /// Seconds a bare control packet takes.
-pub fn packet_seconds() -> f64 {
+pub fn packet_seconds(from_sender: bool) -> f64 {
     let p = preamble();
-    (p.audio.len() + CONTROL_SYLLABLES * control().n + p.tail.len() + SR / 10) as f64 / SR as f64
+    let syllables = if from_sender { SENDER_SYLLABLES } else { REPLY_SYLLABLES };
+    (p.audio.len() + syllables * control().n + p.tail.len() + SR / 10) as f64 / SR as f64
 }
 
 // ------------------------------------------------------- bits and syllables
@@ -447,7 +527,7 @@ pub mod tests {
             }
             Some(out)
         };
-        let digits = read(&mut rx, control(), CONTROL_SYLLABLES)?;
+        let digits = read(&mut rx, control(), SENDER_SYLLABLES)?;
         let packet = Packet::parse(&digits)?;
         Some((packet, read(&mut rx, alphabet, count)?))
     }
@@ -458,7 +538,7 @@ pub mod tests {
         for lv in 1..=10 {
             let a = alphabet(lv);
             let symbols: Vec<usize> = (0..80).map(|_| rng.below(a.pitches.len())).collect();
-            let packet = Packet::new(7, lv, 9, 5);
+            let packet = Packet::sender(kind::DATA, lv, 9, 5, 0xA7);
             let mut audio = vec![0.0f32; SR];
             audio.extend(packet.audio(&[(a, &symbols)]));
             audio.extend(vec![0.0f32; SR]);
@@ -491,12 +571,18 @@ pub mod tests {
 
     #[test]
     fn damaged_packets_are_rejected() {
-        let good = Packet::new(3, 3, 10, 1).digits();
-        assert!(Packet::parse(&good).is_some());
-        for i in 0..good.len() {
-            let mut bad = good.clone();
-            bad[i] ^= 1;
-            assert!(Packet::parse(&bad).is_none());
+        for packet in [Packet::sender(kind::RAMP, 3, 10, 1, 200), Packet::reply(kind::ACK, 5, 0)] {
+            let good = packet.digits();
+            assert_eq!(Packet::length(&good), Some(good.len()));
+            assert_eq!(Packet::parse(&good), Some(packet));
+            for i in 0..good.len() {
+                let mut bad = good.clone();
+                bad[i] ^= 1;
+                assert!(Packet::parse(&bad).is_none());
+            }
         }
+        assert_eq!(Packet::sender(kind::CALL, 0, 0, 0, 0).digits().len(), SENDER_SYLLABLES);
+        assert_eq!(Packet::reply(kind::ANSWER, 0, 0).digits().len(), REPLY_SYLLABLES);
+        assert_eq!(Packet::length(&[0, 0]), None);
     }
 }

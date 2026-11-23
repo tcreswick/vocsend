@@ -100,9 +100,11 @@ cd vocsend
 cargo build --release
 ```
 
-That produces `target/release/vocsend`. There are **no dependencies**: the
-only thing needed to build it is a Rust toolchain. The signal processing,
-error correction, compression and encryption are all in this repository.
+That produces `target/release/vocsend`. All it needs is a Rust toolchain.
+The dependencies are few, widely used and pure Rust: the RustCrypto
+libraries for encryption and hashing, `flate2` for compression, `getrandom`
+and `rpassword`. The signal processing and error correction are in this
+repository.
 
 For sound, vocsend uses tools the system already has:
 
@@ -144,6 +146,8 @@ vocsend help                      everything, in detail
 |---|---|
 | `--level N` | one-way speed, 1 (slowest, most robust) to 10 (fastest). Default 4. `--level last` reuses the level the last negotiation ended on. |
 | `--encrypt [KEY]` | encrypt with a shared key. With no key you are asked for it. |
+| `--address NAME` | with `--encrypt`: who the message is for (see below) |
+| `--timeout SECONDS` | receiver: give up if nothing is heard for this long. Default 60; 0 waits for ever. |
 | `--stream` | send standard input a line at a time; print each line as it arrives |
 | `--stream-chars` | as `--stream`, without waiting for Enter |
 | `-q`, `--quiet` | print nothing unless something goes wrong |
@@ -206,29 +210,59 @@ bursts heard: 6.  Fastest solid level so far: 6  (use: vocsend tx --level 6)
 
 `--encrypt` on both sides encrypts and authenticates every block with
 ChaCha20-Poly1305, using a key derived from the shared passphrase by
-PBKDF2-HMAC-SHA256. The file name is encrypted along with the data. Every
-packet says whether encryption is in use, so a mismatch is reported at once
-instead of producing garbage, and a recorded transmission cannot be replayed
-into the same session.
+Argon2id (both from the RustCrypto libraries). The file name is encrypted
+along with the data. Every packet says whether encryption is in use, so a
+mismatch is reported at once instead of producing garbage, and a recorded
+transmission cannot be replayed into the same session.
 
 Give the key as `--encrypt KEY`, in the `VOCSEND_KEY` environment variable,
 or leave it off to be asked. A key on the command line is visible to other
 users of the machine and ends up in shell history.
 
-The implementations follow the published standards and are checked against
-their test vectors, but they are written from scratch to keep the project
-free of dependencies, and **have not been independently audited**. Anyone
-who can hear the transmission can record it. For anything that matters,
-encrypt and sign the data with an established tool before sending it.
+Anyone who can hear the transmission can record it, and a shared passphrase
+is only as strong as it is long. For anything that matters, encrypt and
+sign the data with an established tool before sending it as well.
+
+### Addressing one receiver among several
+
+With several receivers in earshot, `--address` says which one a message is
+for:
+
+```
+laptop$   vocsend rx --encrypt --address laptop
+desktop$  vocsend rx --encrypt --address desktop
+sender$   vocsend tx notes.txt --encrypt --address laptop
+```
+
+Only the laptop takes it; the desktop ignores it without trying its key.
+A message sent with `--encrypt` and no address is for anyone with the key.
+Addressing only works with encryption: without a key, any receiver could
+read the message regardless of what address it carries. The address costs
+about half a second of air time, and is a convenience, not a secret.
+
+### Checking it arrived
+
+Both sides print a short fingerprint of the data, such as `3f9a-c21d-77b0`.
+If they match, both have the same bytes. Every block already carries a
+checksum and error correction, so a mismatch should never happen; the
+fingerprint is for peace of mind, and for one-way transfers, where the
+sender otherwise hears nothing back.
+
+### Versions
+
+Every transmission states the protocol version the sender speaks and the
+oldest receiver version that can follow it. If the two sides are not
+compatible, both say so plainly, and which side needs upgrading.
 
 ### Exit status
 
 | | |
 |---|---|
 | 0 | success |
-| 1 | the transfer failed |
+| 1 | the transfer failed, or nothing was heard before the timeout |
 | 2 | wrong mode: the sender is negotiating and the receiver is one-way |
 | 3 | encryption settings or keys differ |
+| 4 | the two sides' versions are not compatible |
 
 ## Status
 
@@ -248,7 +282,8 @@ bytes -> compress -> [encrypt] -> blocks -> checksum + Reed-Solomon -> pitches -
 
 Every transmission starts with a fixed preamble of varied syllables, which
 the receiver finds by matching its spectrogram, followed by a small control
-packet at the slowest setting saying what follows. The receiver then reads
+packet at the slowest setting saying what follows: its kind, the protocol
+versions, the address and whether it is encrypted. The receiver then reads
 the pitch of each syllable with a comb of harmonics, and keeps time by how
 cleanly the pitch stands out.
 

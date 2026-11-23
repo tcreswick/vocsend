@@ -7,7 +7,6 @@ mod run;
 mod ui;
 
 use run::{Options, Stream};
-use std::io::IsTerminal;
 use vocsend::crypto::Cipher;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -83,6 +82,12 @@ OPTIONS
                      it can also come from the VOCSEND_KEY environment
                      variable. A key on the command line is visible to
                      other users of the machine and lands in shell history.
+  --address NAME     with --encrypt: who the message is for. A receiver
+                     started with --address NAME takes messages for NAME
+                     and messages for anyone; other receivers ignore them
+                     without trying their key. (--id means the same.)
+  --timeout SECONDS  rx: give up if nothing is heard for this long.
+                     Default 60; 0 waits for ever.
   --stream           send standard input a line at a time as it is typed,
                      and print each line on the other side as it arrives.
                      Works one-way or negotiated. End with Ctrl-D.
@@ -99,9 +104,17 @@ SPEED LEVELS
   Run `vocsend rx test` on one machine and `vocsend tx test` on the other
   to see a live table of which levels arrive intact between them.
 
+CHECKING IT ARRIVED
+  Both sides print a short fingerprint of the data, such as 3f9a-c21d-77b0.
+  If they match, both have the same bytes. Every block already carries a
+  checksum and error correction, so this is for peace of mind, and for
+  one-way transfers, where the sender otherwise hears nothing back.
+
 EXIT STATUS
-  0 success   1 failed   2 wrong mode (sender negotiating, receiver one-way)
+  0 success   1 failed or timed out
+  2 wrong mode (sender negotiating, receiver one-way)
   3 encryption settings or keys differ
+  4 the two sides' vocsend versions are not compatible
 
 SOUND
   Uses the system's own tools: PipeWire (pw-cat), PulseAudio (paplay and
@@ -123,31 +136,9 @@ fn ask_key() -> String {
             return key;
         }
     }
-    #[cfg(unix)]
-    {
-        use std::io::{BufRead, Write};
-        if let Ok(tty) = std::fs::File::open("/dev/tty") {
-            let hide = |on: bool| {
-                let _ = std::process::Command::new("stty")
-                    .arg(if on { "-echo" } else { "echo" })
-                    .stdin(std::fs::File::open("/dev/tty").map(std::process::Stdio::from).unwrap_or(std::process::Stdio::null()))
-                    .status();
-            };
-            eprint!("Key: ");
-            let _ = std::io::stderr().flush();
-            hide(true);
-            let mut line = String::new();
-            let _ = std::io::BufReader::new(tty).read_line(&mut line);
-            hide(false);
-            eprintln!();
-            return line.trim_end_matches(['\r', '\n']).to_string();
-        }
-    }
-    if std::io::stdin().is_terminal() {
-        eprint!("Key (it will be visible): ");
-        let mut line = String::new();
-        let _ = std::io::stdin().read_line(&mut line);
-        return line.trim_end_matches(['\r', '\n']).to_string();
+    // Asked on the terminal itself, so it works even when data is piped in.
+    if let Ok(key) = rpassword::prompt_password("Key: ") {
+        return key;
     }
     usage("--encrypt needs a key: give it as --encrypt KEY or in VOCSEND_KEY")
 }
@@ -161,7 +152,7 @@ _vocsend() {
     case "$prev" in
         --level) COMPREPLY=($(compgen -W "1 2 3 4 5 6 7 8 9 10 last" -- "$cur")); return ;;
         --levels) COMPREPLY=($(compgen -W "3-10 1-10 5-9" -- "$cur")); return ;;
-        --encrypt) return ;;
+        --encrypt|--address|--id|--timeout) return ;;
         completions) COMPREPLY=($(compgen -W "bash zsh fish" -- "$cur")); return ;;
     esac
     if [ "$COMP_CWORD" -eq 1 ]; then
@@ -169,7 +160,7 @@ _vocsend() {
         return
     fi
     if [[ "$cur" == -* ]]; then
-        COMPREPLY=($(compgen -W "--level --encrypt --stream --stream-chars --levels --quiet --help" -- "$cur"))
+        COMPREPLY=($(compgen -W "--level --encrypt --address --timeout --stream --stream-chars --levels --quiet --help" -- "$cur"))
         return
     fi
     words="negotiate test"
@@ -195,6 +186,8 @@ _vocsend() {
     _arguments -s \
         '--level[speed, 1 slowest to 10 fastest, or last]:level:(1 2 3 4 5 6 7 8 9 10 last)' \
         '--encrypt[encrypt with a shared key]::key:' \
+        '--address[with --encrypt, the receiver this is for]:name:' \
+        '--timeout[seconds to wait before giving up, 0 for ever]:seconds:' \
         '--stream[send and print a line at a time]' \
         '--stream-chars[send whatever is typed after a short pause]' \
         '--levels[levels to try in test mode]:range:(3-10 1-10 5-9)' \
@@ -219,6 +212,8 @@ complete -c vocsend -n '__fish_seen_subcommand_from tx rx' -a test -d 'find out 
 complete -c vocsend -n '__fish_seen_subcommand_from completions' -a 'bash zsh fish'
 complete -c vocsend -l level -x -a '1 2 3 4 5 6 7 8 9 10 last' -d 'speed, 1 slowest to 10 fastest'
 complete -c vocsend -l encrypt -d 'encrypt with a shared key'
+complete -c vocsend -l address -x -d 'with --encrypt, the receiver this is for'
+complete -c vocsend -l timeout -x -d 'seconds to wait before giving up, 0 for ever'
 complete -c vocsend -l stream -d 'send and print a line at a time'
 complete -c vocsend -l stream-chars -d 'send whatever is typed after a short pause'
 complete -c vocsend -l levels -x -d 'levels to try in test mode'
@@ -255,6 +250,8 @@ fn main() {
     let mut encrypt = false;
     let mut stream = Stream::Off;
     let mut levels = (3, 10);
+    let mut address: Option<String> = None;
+    let mut timeout = Some(60.0);
     let mut i = 1;
     while i < args.len() {
         let arg = args[i].as_str();
@@ -283,6 +280,23 @@ fn main() {
                     _ => usage("--levels needs a range within 1-10, such as 3-10"),
                 };
             }
+            "--address" | "--id" => {
+                let value = args.get(i).unwrap_or_else(|| usage("--address needs a name"));
+                i += 1;
+                if value.is_empty() {
+                    usage("--address needs a name");
+                }
+                address = Some(value.clone());
+            }
+            "--timeout" => {
+                let value = args.get(i).unwrap_or_else(|| usage("--timeout needs a number of seconds (0 to wait for ever)"));
+                i += 1;
+                timeout = match value.parse::<f64>() {
+                    Ok(t) if t == 0.0 => None,
+                    Ok(t) if t > 0.0 => Some(t),
+                    _ => usage("--timeout needs a number of seconds (0 to wait for ever)"),
+                };
+            }
             "--encrypt" => {
                 encrypt = true;
                 // The next word is the key unless it is another option.
@@ -307,14 +321,17 @@ fn main() {
     if test && (negotiate || stream != Stream::Off || encrypt) {
         usage("`test` takes no other mode: use `vocsend tx test` and `vocsend rx test`");
     }
+    if address.is_some() && !encrypt {
+        usage("--address only works with --encrypt: without a key, any receiver could read the message whatever its address");
+    }
     let cipher = encrypt.then(|| {
         let key = key.unwrap_or_else(ask_key);
         if key.is_empty() {
             usage("the key is empty");
         }
-        Cipher::new(&key).unwrap_or_else(|e| ui::die(&format!("no secure random numbers: {e}")))
+        Cipher::new(&key).unwrap_or_else(|e| ui::die(&e))
     });
-    let opts = Options { negotiate, path, level, cipher, stream, levels };
+    let opts = Options { negotiate, path, level, cipher, stream, levels, address, timeout };
     let code = match (mode, test) {
         ("tx", true) => run::tx_test(opts),
         ("rx", true) => run::rx_test(opts),

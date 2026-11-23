@@ -5,7 +5,7 @@ use crate::ui;
 use std::time::{Duration, Instant};
 use vocsend::dsp::{Rng, SR};
 use vocsend::frame;
-use vocsend::modem::{self, Packet, Receiver, CONTROL_SYLLABLES};
+use vocsend::modem::{self, Packet, Receiver, REPLY_SYLLABLES};
 use vocsend::synth::Alphabet;
 
 pub struct Link {
@@ -86,10 +86,17 @@ impl Link {
                 self.pull();
                 continue;
             }
-            if let Some(heard) = self.read(modem::control(), CONTROL_SYLLABLES, None) {
-                let digits: Vec<usize> = heard.iter().map(|&(s, _)| s).collect();
-                if let Some(packet) = Packet::parse(&digits).filter(|p| wanted(p)) {
-                    return Some(packet);
+            // Every packet starts with its kind, which says how long it is.
+            if let Some(mut heard) = self.read(modem::control(), REPLY_SYLLABLES, None) {
+                let digits = |h: &[(usize, f32)]| h.iter().map(|&(s, _)| s).collect::<Vec<usize>>();
+                let complete = match Packet::length(&digits(&heard)) {
+                    Some(total) => self.extend(modem::control(), &mut heard, total, None),
+                    None => false,
+                };
+                if complete {
+                    if let Some(packet) = Packet::parse(&digits(&heard)).filter(|p| wanted(p)) {
+                        return Some(packet);
+                    }
                 }
             }
             self.rx.restart();
@@ -99,22 +106,27 @@ impl Link {
     /// Read `count` syllables following the packet just heard.
     pub fn read(&mut self, alphabet: &Alphabet, count: usize, label: Option<&str>) -> Option<Vec<(usize, f32)>> {
         self.rx.begin_run();
-        let allowed = count as f64 * alphabet.ms as f64 / 1000.0 + 4.0;
-        let deadline = Instant::now() + Duration::from_secs_f64(allowed);
         let mut out = Vec::with_capacity(count);
-        while out.len() < count {
-            match self.rx.next_symbol(alphabet, out.len(), count) {
-                Some(symbol) => out.push(symbol),
+        self.extend(alphabet, &mut out, count, label).then_some(out)
+    }
+
+    /// Carry on reading the current run until `heard` holds `total` syllables.
+    /// False if they did not arrive in time.
+    fn extend(&mut self, alphabet: &Alphabet, heard: &mut Vec<(usize, f32)>, total: usize, label: Option<&str>) -> bool {
+        let more = total.saturating_sub(heard.len());
+        let deadline = Instant::now() + Duration::from_secs_f64(more as f64 * alphabet.ms as f64 / 1000.0 + 4.0);
+        let mut complete = true;
+        while heard.len() < total {
+            match self.rx.next_symbol(alphabet, heard.len(), total) {
+                Some(symbol) => heard.push(symbol),
                 None => {
                     if Instant::now() > deadline {
-                        if label.is_some() {
-                            ui::meter_done();
-                        }
-                        return None;
+                        complete = false;
+                        break;
                     }
                     self.pull();
                     if let Some(label) = label {
-                        ui::meter(label, out.len() as f64 / count as f64);
+                        ui::meter(label, heard.len() as f64 / total as f64);
                     }
                 }
             }
@@ -122,7 +134,7 @@ impl Link {
         if label.is_some() {
             ui::meter_done();
         }
-        Some(out)
+        complete
     }
 
     /// Read one framed block at a level: its bytes, or None if it did not
@@ -135,28 +147,8 @@ impl Link {
         let (length, nsym) = frame::decode_header(&bytes, &conf)?;
         let total = frame::HEADER_LEN + frame::body_len(length, nsym);
         // Carry straight on: the rest of the frame follows without a gap.
-        let more = modem::syllables_for(total, bits) - heard.len();
-        let deadline = Instant::now() + Duration::from_secs_f64(more as f64 * alphabet.ms as f64 / 1000.0 + 4.0);
-        let start = heard.len();
-        while heard.len() < start + more {
-            match self.rx.next_symbol(alphabet, heard.len(), start + more) {
-                Some(symbol) => heard.push(symbol),
-                None => {
-                    if Instant::now() > deadline {
-                        if label.is_some() {
-                            ui::meter_done();
-                        }
-                        return None;
-                    }
-                    self.pull();
-                    if let Some(label) = label {
-                        ui::meter(label, heard.len() as f64 / (start + more) as f64);
-                    }
-                }
-            }
-        }
-        if label.is_some() {
-            ui::meter_done();
+        if !self.extend(alphabet, &mut heard, modem::syllables_for(total, bits), label) {
+            return None;
         }
         let (bytes, conf) = modem::unpack(&heard, bits, total);
         frame::decode_body(&bytes[frame::HEADER_LEN..], &conf[frame::HEADER_LEN..], length, nsym)

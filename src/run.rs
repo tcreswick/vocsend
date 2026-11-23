@@ -4,24 +4,11 @@ use crate::link::Link;
 use crate::ui::{self, log};
 use std::io::{BufRead, IsTerminal, Read, Write};
 use vocsend::crypto::Cipher;
+use vocsend::crypto;
+use vocsend::modem::kind::*;
 use vocsend::modem::{self, level, Packet};
 use vocsend::payload;
 use vocsend::plan::{self, clock, ATTEMPTS, RAMP_LEVELS, RAMP_SYLLABLES, TEST_SYLLABLES, TURNAROUND};
-
-// Kinds of control packet. The sender says CALL, RAMP, TEST, DATA, PROBE and
-// BYE; the receiver, only ever in negotiate mode, says the rest.
-const CALL: u8 = 1;
-const ANSWER: u8 = 2;
-const RAMP: u8 = 3;
-const REPORT: u8 = 4;
-const TEST: u8 = 5;
-const ACCEPT: u8 = 6;
-const DATA: u8 = 7;
-const ACK: u8 = 8;
-const NAK: u8 = 9;
-const PROBE: u8 = 10;
-const BYE: u8 = 11;
-const REFUSE: u8 = 12;
 
 // Flags carried by every packet from the sender, so a mismatch in settings
 // shows up before any data moves.
@@ -32,6 +19,7 @@ const STREAMING: u8 = 4;
 pub const EXIT_FAILED: i32 = 1;
 pub const EXIT_MODE: i32 = 2;
 pub const EXIT_KEY: i32 = 3;
+pub const EXIT_VERSION: i32 = 4;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Stream {
@@ -48,6 +36,10 @@ pub struct Options {
     pub cipher: Option<Cipher>,
     pub stream: Stream,
     pub levels: (usize, usize),
+    /// The receiver this is for (sender) or the name this receiver answers to.
+    pub address: Option<String>,
+    /// Seconds a receiver waits to hear something; None waits for ever.
+    pub timeout: Option<f64>,
 }
 
 // ---------------------------------------------------------------- settings
@@ -100,6 +92,7 @@ struct Sender {
     link: Link,
     cipher: Option<Cipher>,
     flags: u8,
+    address: u8,
     acknowledged: bool,
     lv: usize,
     redundancy: f64,
@@ -116,7 +109,7 @@ impl Sender {
         log("calling the receiver...");
         let mut answered = false;
         for _ in 0..40 {
-            self.link.send(Packet::new(CALL, 0, 0, self.flags).audio(&[]), None);
+            self.link.send(Packet::sender(CALL, 0, 0, self.flags, self.address).audio(&[]), None);
             match self.link.listen(Some(5.5), &|p| p.kind == ANSWER || p.kind == REFUSE) {
                 Some(p) if p.kind == REFUSE => return Err(self.refused(p.a)),
                 Some(_) => {
@@ -139,7 +132,7 @@ impl Sender {
         let mut clean = None;
         for _ in 0..ATTEMPTS {
             self.link.pause(TURNAROUND);
-            self.link.send(Packet::new(RAMP, lo, hi, self.flags).audio(&sections), None);
+            self.link.send(Packet::sender(RAMP, lo, hi, self.flags, self.address).audio(&sections), None);
             if let Some(p) = self.link.listen(Some(9.0), &|p| p.kind == REPORT) {
                 clean = Some(p.a as usize);
                 break;
@@ -160,7 +153,7 @@ impl Sender {
         let known = plan::known_symbols(try_level, TEST_SYLLABLES, 2);
         self.link.pause(TURNAROUND);
         self.link.send(
-            Packet::new(TEST, try_level, 0, self.flags)
+            Packet::sender(TEST, try_level, 0, self.flags, self.address)
                 .audio(&[(modem::control(), &size), (modem::alphabet(try_level), &known)]),
             None,
         );
@@ -189,6 +182,14 @@ impl Sender {
             1 if self.encrypted() => ui::error("the receiver refused: this side is encrypting, but the receiver was started without --encrypt"),
             1 => ui::error("the receiver refused: it was started with --encrypt, but this side is not encrypting"),
             2 => ui::error("the receiver refused: the keys do not match"),
+            3 => {
+                ui::error("the receiver refused: its vocsend is too old for this one. Upgrade the receiving side.");
+                return EXIT_VERSION;
+            }
+            4 => {
+                ui::error("the receiver refused: this vocsend is too old for it. Upgrade this side.");
+                return EXIT_VERSION;
+            }
             _ => ui::error("the receiver refused the transfer"),
         }
         EXIT_KEY
@@ -212,12 +213,12 @@ impl Sender {
                     log(&format!("block {} of {} ({} bytes), about {} left{again}", done + 1, done + more, size, clock(left)));
                 }
                 let body = match &mut self.cipher {
-                    Some(c) => c.seal(chunk, &[field as u8, self.flags]),
+                    Some(c) => c.seal(chunk, &[field as u8, self.flags, self.address]).unwrap_or_else(|e| ui::die(e)),
                     None => chunk.to_vec(),
                 };
                 let alphabet = modem::alphabet(self.lv);
                 let symbols = modem::pack(&vocsend::frame::encode(&body, self.redundancy), alphabet.bits());
-                let audio = Packet::new(DATA, self.lv, field, self.flags).audio(&[(alphabet, &symbols)]);
+                let audio = Packet::sender(DATA, self.lv, field, self.flags, self.address).audio(&[(alphabet, &symbols)]);
                 self.link.send(audio, show_progress.then_some("sending"));
                 if !self.acknowledged {
                     delivered = true;
@@ -255,7 +256,7 @@ impl Sender {
     /// Tell a streaming receiver there is no more to come.
     fn bye(&mut self) {
         for _ in 0..ATTEMPTS {
-            self.link.send(Packet::new(BYE, 0, 0, self.flags).audio(&[]), None);
+            self.link.send(Packet::sender(BYE, 0, 0, self.flags, self.address).audio(&[]), None);
             if !self.acknowledged || self.link.listen(Some(9.0), &|p| p.kind == ACK).is_some() {
                 break;
             }
@@ -338,10 +339,14 @@ pub fn tx(opts: Options) -> i32 {
     let flags = if opts.cipher.is_some() { ENCRYPTED } else { 0 }
         | if opts.negotiate { NEGOTIATED } else { 0 }
         | if streaming { STREAMING } else { 0 };
+    if !streaming {
+        log(&format!("fingerprint {} (the receiver should show the same)", crypto::fingerprint(&data)));
+    }
     let mut sender = Sender {
         link: Link::open(true, opts.negotiate),
         cipher: opts.cipher,
         flags,
+        address: opts.address.as_deref().map(crypto::address_tag).unwrap_or(0),
         acknowledged: opts.negotiate,
         lv,
         redundancy: level(lv).redundancy,
@@ -483,11 +488,54 @@ pub fn rx(mut opts: Options) -> i32 {
     let mut asked: Option<f64> = None;
     let mut streaming = opts.stream != Stream::Off;
     let mut told_about_probe = false;
+    let mut told_about_others = false;
+    let mut contacted = false;
     let has_key = opts.cipher.is_some();
+    let mine = opts.address.as_deref().map(crypto::address_tag).unwrap_or(0);
 
     loop {
-        let Some(p) = link.listen(None, &|p| matches!(p.kind, CALL | RAMP | TEST | DATA | PROBE | BYE)) else { continue };
+        // Once a stream is under way, silence just means nobody is typing.
+        let wait = if streaming && contacted { None } else { opts.timeout };
+        let Some(p) = link.listen(wait, &|p| modem::kind::from_sender(p.kind)) else {
+            ui::error(&format!(
+                "nothing heard for {:.0} seconds; giving up. (--timeout 0 waits for ever.)",
+                opts.timeout.unwrap_or(0.0)
+            ));
+            return EXIT_FAILED;
+        };
+        // Addressed to another receiver: not ours to open, or even to answer.
+        if p.address != 0 && p.address != mine {
+            if !told_about_others {
+                log(if mine == 0 {
+                    "heard a transmission addressed to a named receiver; ignoring it (this side has no --address)"
+                } else {
+                    "heard a transmission addressed to a different receiver; ignoring it"
+                });
+                told_about_others = true;
+            }
+            continue;
+        }
         let wants_reply = p.flags & NEGOTIATED != 0 || matches!(p.kind, CALL | RAMP | TEST);
+        if p.needs > modem::PROTOCOL || p.version < modem::MIN_SENDER {
+            let too_old_here = p.needs > modem::PROTOCOL;
+            ui::error(&if too_old_here {
+                format!(
+                    "the sender uses protocol version {} and needs a receiver at version {} or newer; this vocsend speaks version {}. Upgrade this side.",
+                    p.version, p.needs, modem::PROTOCOL
+                )
+            } else {
+                format!(
+                    "the sender uses protocol version {}; this vocsend needs version {} or newer. Upgrade the sending side.",
+                    p.version, modem::MIN_SENDER
+                )
+            });
+            if wants_reply && opts.negotiate {
+                link.pause(TURNAROUND);
+                link.send(Packet::reply(REFUSE, if too_old_here { 3 } else { 4 }, 0).audio(&[]), None);
+            }
+            return EXIT_VERSION;
+        }
+        contacted = true;
 
         if p.kind == PROBE {
             if !told_about_probe {
@@ -509,7 +557,7 @@ pub fn rx(mut opts: Options) -> i32 {
             });
             if wants_reply {
                 link.pause(TURNAROUND);
-                link.send(Packet::new(REFUSE, 1, 0, 0).audio(&[]), None);
+                link.send(Packet::reply(REFUSE, 1, 0).audio(&[]), None);
             }
             return EXIT_KEY;
         }
@@ -518,7 +566,7 @@ pub fn rx(mut opts: Options) -> i32 {
             CALL => {
                 log("sender is calling; answering");
                 link.pause(TURNAROUND);
-                link.send(Packet::new(ANSWER, 0, 0, 0).audio(&[]), None);
+                link.send(Packet::reply(ANSWER, 0, 0).audio(&[]), None);
             }
             RAMP => {
                 let (lo, hi) = (p.a as usize, p.b as usize);
@@ -541,7 +589,7 @@ pub fn rx(mut opts: Options) -> i32 {
                 let pick = if clean > 0 { format!("level {clean}") } else { "none clean".to_string() };
                 log(&format!("ramp, wrong syllables per level {} -> {pick}", errors.join(" ")));
                 link.pause(TURNAROUND);
-                link.send(Packet::new(REPORT, clean, 0, 0).audio(&[]), None);
+                link.send(Packet::reply(REPORT, clean, 0).audio(&[]), None);
             }
             TEST => {
                 let lv = p.a as usize;
@@ -569,12 +617,12 @@ pub fn rx(mut opts: Options) -> i32 {
                     log(&format!("expecting {n} bytes in {count} block{}: about {}", plural(count), clock(seconds)));
                 }
                 link.pause(TURNAROUND);
-                link.send(Packet::new(ACCEPT, use_lv, plan::redundancy_code(redundancy), 0).audio(&[]), None);
+                link.send(Packet::reply(ACCEPT, use_lv, plan::redundancy_code(redundancy)).audio(&[]), None);
             }
             BYE => {
                 if wants_reply {
                     link.pause(TURNAROUND);
-                    link.send(Packet::new(ACK, 0, 0, 0).audio(&[]), None);
+                    link.send(Packet::reply(ACK, 0, 0).audio(&[]), None);
                 }
                 log("the sender has finished");
                 return 0;
@@ -595,7 +643,7 @@ pub fn rx(mut opts: Options) -> i32 {
                     log(&format!("block {} at level {lv} did not decode", blocks + 1));
                     if wants_reply {
                         link.pause(TURNAROUND);
-                        link.send(Packet::new(NAK, seq as usize, 0, 0).audio(&[]), None);
+                        link.send(Packet::reply(NAK, seq as usize, 0).audio(&[]), None);
                         continue;
                     }
                     if streaming {
@@ -605,13 +653,13 @@ pub fn rx(mut opts: Options) -> i32 {
                     return EXIT_FAILED;
                 };
                 let block = match &mut opts.cipher {
-                    Some(cipher) => match cipher.open(&body, &[p.b, p.flags]) {
+                    Some(cipher) => match cipher.open(&body, &[p.b, p.flags, p.address]) {
                         Ok(plain) => plain,
                         Err(why) => {
                             ui::error(&format!("could not decrypt: {why}"));
                             if wants_reply {
                                 link.pause(TURNAROUND);
-                                link.send(Packet::new(REFUSE, 2, 0, 0).audio(&[]), None);
+                                link.send(Packet::reply(REFUSE, 2, 0).audio(&[]), None);
                             }
                             return EXIT_KEY;
                         }
@@ -638,7 +686,7 @@ pub fn rx(mut opts: Options) -> i32 {
                 }
                 if wants_reply {
                     link.pause(TURNAROUND);
-                    link.send(Packet::new(ACK, seq as usize, 0, 0).audio(&[]), None);
+                    link.send(Packet::reply(ACK, seq as usize, 0).audio(&[]), None);
                 }
                 if !last || repeat {
                     continue;
@@ -662,11 +710,12 @@ pub fn rx(mut opts: Options) -> i32 {
                 if wants_reply {
                     // Say it twice: a lost final acknowledgement cannot be asked for again.
                     link.pause(0.3);
-                    link.send(Packet::new(ACK, seq as usize, 0, 0).audio(&[]), None);
+                    link.send(Packet::reply(ACK, seq as usize, 0).audio(&[]), None);
                 }
                 return match deliver(name, &data, opts.path.as_deref()) {
                     Ok(summary) => {
                         log(&summary);
+                        log(&format!("fingerprint {} (the sender should show the same)", crypto::fingerprint(&data)));
                         0
                     }
                     Err(why) => {
@@ -690,7 +739,7 @@ pub fn tx_test(opts: Options) -> i32 {
     loop {
         for lv in lo..=hi {
             let known = plan::known_symbols(lv, PROBE_SYLLABLES, 3);
-            link.send(Packet::new(PROBE, lv, 0, 0).audio(&[(modem::alphabet(lv), &known)]), None);
+            link.send(Packet::sender(PROBE, lv, 0, 0, 0).audio(&[(modem::alphabet(lv), &known)]), None);
             link.pause(0.3);
         }
     }
@@ -744,7 +793,11 @@ pub fn rx_test(opts: Options) -> i32 {
     log("listening for `vocsend tx test` on the other machine; the table updates after each burst. Ctrl-C to stop.");
     show(&results, heard);
     loop {
-        let Some(p) = link.listen(None, &|p| p.kind == PROBE && (1..=10).contains(&p.a)) else { continue };
+        let wait = if heard == 0 { opts.timeout } else { None };
+        let Some(p) = link.listen(wait, &|p| p.kind == PROBE && (1..=10).contains(&p.a)) else {
+            ui::error("no test bursts heard; giving up. Is `vocsend tx test` running on the other machine? (--timeout 0 waits for ever.)");
+            return EXIT_FAILED;
+        };
         let lv = p.a as usize;
         let known = plan::known_symbols(lv, PROBE_SYLLABLES, 3);
         let wrong = match link.read(modem::alphabet(lv), PROBE_SYLLABLES, None) {

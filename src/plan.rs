@@ -123,8 +123,8 @@ fn block_seconds(nbytes: usize, lv: usize, redundancy: f64, acknowledged: bool, 
     let on_air = frame::encoded_len(nbytes + if encrypted { crypto::OVERHEAD } else { 0 }, redundancy);
     let alphabet = modem::alphabet(lv);
     let data = modem::syllables_for(on_air, alphabet.bits()) as f64 * alphabet.ms as f64 / 1000.0;
-    let packet = modem::packet_seconds();
-    packet + data + if acknowledged { packet + 2.0 * TURNAROUND + 0.3 } else { TURNAROUND }
+    let reply = modem::packet_seconds(false) + 2.0 * TURNAROUND + 0.3;
+    modem::packet_seconds(true) + data + if acknowledged { reply } else { TURNAROUND }
 }
 
 /// (blocks, seconds) to send `nbytes` more if nothing has to be repeated.

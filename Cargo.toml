@@ -10,9 +10,15 @@ readme = "README.md"
 keywords = ["audio", "modem", "air-gap", "data-transfer"]
 categories = ["command-line-utilities"]
 
-# No dependencies: everything, including the signal processing, error
-# correction, compression and encryption, is in this repository.
+# Encryption, hashing and compression come from widely used pure-Rust
+# libraries. The signal processing and error correction are in this repository.
 [dependencies]
+argon2 = "0.6.0"
+chacha20poly1305 = "0.11.0"
+flate2 = "1.1.11"
+getrandom = "0.4.3"
+rpassword = "7.5.5"
+sha2 = "0.11.1"
 
 [profile.release]
 opt-level = 3
