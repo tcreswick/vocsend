@@ -478,7 +478,7 @@ pub fn rx(mut opts: Options) -> i32 {
     loop {
         // Once a stream is under way, silence just means nobody is typing.
         let wait = if streaming && contacted { None } else { opts.timeout };
-        let Some(p) = link.listen(wait, &|p| modem::kind::from_sender(p.kind)) else {
+        let Some(p) = link.wait(wait, &|p| modem::kind::from_sender(p.kind)) else {
             ui::error(&format!(
                 "nothing heard for {:.0} seconds; giving up. (--timeout 0 waits for ever.)",
                 opts.timeout.unwrap_or(0.0)
@@ -776,7 +776,7 @@ pub fn rx_test(opts: Options) -> i32 {
     show(&results, heard);
     loop {
         let wait = if heard == 0 { opts.timeout } else { None };
-        let Some(p) = link.listen(wait, &|p| p.kind == PROBE && (1..=10).contains(&p.a)) else {
+        let Some(p) = link.wait(wait, &|p| p.kind == PROBE && (1..=10).contains(&p.a)) else {
             ui::error("no test bursts heard; giving up. Is `vocsend tx test` running on the other machine? (--timeout 0 waits for ever.)");
             return EXIT_FAILED;
         };

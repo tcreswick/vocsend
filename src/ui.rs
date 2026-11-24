@@ -61,6 +61,24 @@ pub fn meter(label: &str, fraction: f64) {
     *shown = line;
 }
 
+/// A one-line loudness display, on a terminal only: a bar from -70 to 0 dB.
+pub fn level(label: &str, db: f32) {
+    if quiet() || !std::io::stderr().is_terminal() {
+        return;
+    }
+    const CELLS: usize = 24;
+    let filled = (((db + 70.0) / 70.0).clamp(0.0, 1.0) * CELLS as f32).round() as usize;
+    let note = if db <= -99.0 { "no signal".to_string() } else { format!("{db:4.0} dB") };
+    let line = format!("  {label} [{}{}] {note}", "#".repeat(filled), "-".repeat(CELLS - filled));
+    let mut shown = SHOWN.lock().unwrap_or_else(|e| e.into_inner());
+    if *shown == line {
+        return;
+    }
+    eprint!("\r{line}\x1b[K");
+    let _ = std::io::stderr().flush();
+    *shown = line;
+}
+
 pub fn meter_done() {
     clear_meter();
 }

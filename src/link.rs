@@ -12,7 +12,36 @@ pub struct Link {
     player: Option<Player>,
     mic: Option<Mic>,
     rx: Receiver,
+    /// Samples of unbroken, complete silence from the microphone.
+    silent: usize,
+    warned: bool,
 }
+
+/// Below this a sample counts as no signal at all (-100 dB). Even a quiet
+/// room through a working microphone is far louder; a muted or blocked
+/// microphone gives exact zeros.
+const DEAD: f32 = 1e-5;
+/// How long complete silence lasts before we say so.
+const DEAD_SECONDS: f64 = 2.5;
+
+#[cfg(target_os = "linux")]
+const MIC_HELP: &[&str] = &[
+    "  check the input in your sound settings (pavucontrol, alsamixer), or unmute it with one of:",
+    "    wpctl set-mute @DEFAULT_AUDIO_SOURCE@ 0",
+    "    pactl set-source-mute @DEFAULT_SOURCE@ 0",
+];
+#[cfg(target_os = "macos")]
+const MIC_HELP: &[&str] = &[
+    "  check System Settings > Privacy & Security > Microphone allows your terminal,",
+    "  and System Settings > Sound > Input has the right microphone with its level up.",
+];
+#[cfg(target_os = "windows")]
+const MIC_HELP: &[&str] = &[
+    "  check Settings > Privacy & security > Microphone allows desktop apps,",
+    "  and Settings > System > Sound > Input has the right microphone, unmuted.",
+];
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+const MIC_HELP: &[&str] = &["  check the input device and its level in your sound settings."];
 
 impl Link {
     /// A side that never speaks gets no player at all, and one that never
@@ -20,7 +49,7 @@ impl Link {
     pub fn open(speak: bool, listen: bool) -> Link {
         let player = speak.then(|| Player::open().unwrap_or_else(|e| ui::die(&e)));
         let mic = listen.then(|| Mic::open().unwrap_or_else(|e| ui::die(&e)));
-        Link { player, mic, rx: Receiver::new() }
+        Link { player, mic, rx: Receiver::new(), silent: 0, warned: false }
     }
 
     fn chunk(&mut self) -> Vec<f32> {
@@ -33,9 +62,41 @@ impl Link {
         }
     }
 
-    fn pull(&mut self) {
+    fn pull(&mut self) -> Vec<f32> {
         let chunk = self.chunk();
         self.rx.feed(&chunk);
+        self.watch_for_silence(&chunk);
+        chunk
+    }
+
+    /// Say so, once, if the microphone is delivering nothing at all: it is
+    /// muted, blocked or the wrong input, and no amount of waiting will help.
+    fn watch_for_silence(&mut self, chunk: &[f32]) {
+        if self.mic.is_none() {
+            return;
+        }
+        if chunk.iter().all(|v| v.abs() < DEAD) {
+            self.silent += chunk.len();
+            if !self.warned && self.silent as f64 > DEAD_SECONDS * SR as f64 {
+                self.warned = true;
+                ui::log("the microphone is giving complete silence. It is probably muted, blocked, or not the input you expect.");
+                for line in MIC_HELP {
+                    ui::log(line);
+                }
+            }
+        } else {
+            if self.warned {
+                self.warned = false;
+                ui::log("the microphone is live now.");
+            }
+            self.silent = 0;
+        }
+    }
+
+    /// Wait for a control packet like `listen`, showing how loud the
+    /// microphone is meanwhile, so a dead or quiet input is obvious.
+    pub fn wait(&mut self, timeout: Option<f64>, wanted: &dyn Fn(&Packet) -> bool) -> Option<Packet> {
+        self.listen_showing(timeout, wanted, true)
     }
 
     /// Let time pass, keeping the microphone drained.
@@ -74,6 +135,11 @@ impl Link {
 
     /// Wait for a control packet that `wanted` accepts. None on timeout.
     pub fn listen(&mut self, timeout: Option<f64>, wanted: &dyn Fn(&Packet) -> bool) -> Option<Packet> {
+        self.listen_showing(timeout, wanted, false)
+    }
+
+    fn listen_showing(&mut self, timeout: Option<f64>, wanted: &dyn Fn(&Packet) -> bool, show: bool) -> Option<Packet> {
+        let mut level = -100.0f32;
         if self.rx.locked() {
             self.rx.restart();
         }
@@ -81,11 +147,20 @@ impl Link {
         loop {
             if !self.rx.search() {
                 if deadline.is_some_and(|d| Instant::now() > d) {
+                    ui::meter_done();
                     return None;
                 }
-                self.pull();
+                let chunk = self.pull();
+                if show {
+                    // Jump up at once, fall back slowly, like a level meter.
+                    let power = chunk.iter().map(|v| v * v).sum::<f32>() / chunk.len().max(1) as f32;
+                    let now = (10.0 * (power + 1e-12).log10()).max(-100.0);
+                    level = now.max(level - 3.0);
+                    ui::level("listening", level);
+                }
                 continue;
             }
+            ui::meter_done();
             // Every packet starts with its kind, which says how long it is.
             if let Some(mut heard) = self.read(modem::control(), REPLY_SYLLABLES, None) {
                 let digits = |h: &[(usize, f32)]| h.iter().map(|&(s, _)| s).collect::<Vec<usize>>();

@@ -297,6 +297,19 @@ checksum and error correction, so a mismatch should never happen; the
 fingerprint is for peace of mind, and for one-way transfers, where the
 sender otherwise hears nothing back.
 
+### Is the microphone working?
+
+While it waits, the receiver shows how loud the microphone is:
+
+```
+  listening [##########--------------]  -41 dB
+```
+
+The bar should move when you make a noise. If the microphone delivers
+nothing at all for a couple of seconds, which is what a muted or blocked
+microphone does, vocsend says so and suggests where to look. It never
+changes your sound settings itself.
+
 ### Versions
 
 Every transmission states the protocol version the sender speaks and the
