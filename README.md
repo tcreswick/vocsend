@@ -126,7 +126,12 @@ sender$ gpg --export --armor me@example.com | vocsend tx
 ## Install
 
 Download a binary for your system from the
-[releases page](https://github.com/tcreswick/vocsend/releases), or build it:
+[releases page](https://github.com/tcreswick/vocsend/releases). The Linux
+binaries run on Debian 11, Ubuntu 20.04 and anything newer, and need the
+ALSA library, which desktop systems already have (`apt install libasound2`
+on a bare Debian or Ubuntu server).
+
+Or build it:
 
 ```bash
 git clone https://github.com/tcreswick/vocsend
