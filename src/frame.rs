@@ -67,10 +67,14 @@ pub fn encoded_len(data_len: usize, redundancy: f64) -> usize {
 }
 
 pub fn encode(data: &[u8], redundancy: f64) -> Vec<u8> {
+    encode_with(data, parity(data.len() + 4, redundancy))
+}
+
+/// As `encode`, with the number of parity bytes per block given outright.
+pub fn encode_with(data: &[u8], nsym: usize) -> Vec<u8> {
     assert!(data.len() <= MAX_DATA);
     let mut body = data.to_vec();
     body.extend_from_slice(&crc32(data).to_be_bytes());
-    let nsym = parity(body.len(), redundancy);
     let mut out = rs::encode(&[VERSION << 4, (body.len() >> 8) as u8, body.len() as u8, nsym as u8], HEADER_PARITY);
     let mut blocks = Vec::new();
     let mut at = 0;
@@ -112,6 +116,12 @@ pub fn decode_body(stream: &[u8], confidence: &[f32], length: usize, nsym: usize
     (crc32(data).to_be_bytes() == check).then(|| data.to_vec())
 }
 
+/// How many bytes of a received frame had to be repaired to give `data`.
+/// `heard` is the whole frame as heard, header included.
+pub fn repaired(heard: &[u8], data: &[u8], nsym: usize) -> usize {
+    encode_with(data, nsym).iter().zip(heard).filter(|(a, b)| a != b).count()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -140,6 +150,8 @@ mod tests {
                 assert_eq!(length, n + 4);
                 let out = decode_body(&air[HEADER_LEN..], &conf[HEADER_LEN..], length, nsym).unwrap();
                 assert_eq!(out, data);
+                let damaged = (HEADER_LEN..air.len()).step_by(23).count();
+                assert_eq!(repaired(&air, &out, nsym), damaged);
             }
         }
     }

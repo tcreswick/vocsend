@@ -134,6 +134,22 @@ pub fn estimate(nbytes: usize, lv: usize, redundancy: f64, acknowledged: bool, e
     (sizes.len(), seconds)
 }
 
+/// Control syllables used to announce a stream's length before a test.
+pub const SIZE_SYLLABLES: usize = 14;
+
+/// The stream length as control syllables: six 4-bit fields and a check.
+pub fn size_digits(nbytes: usize) -> Vec<usize> {
+    let mut fields: Vec<usize> = (0..6).rev().map(|i| nbytes >> (4 * i) & 15).collect();
+    fields.push((fields.iter().sum::<usize>() + 9) & 15);
+    fields.iter().flat_map(|f| [f >> 2, f & 3]).collect()
+}
+
+pub fn read_size(digits: &[usize]) -> Option<usize> {
+    let fields: Vec<usize> = digits.chunks(2).map(|d| d[0] << 2 | d[1]).collect();
+    (fields.len() == 7 && fields[6] == (fields[..6].iter().sum::<usize>() + 9) & 15)
+        .then(|| fields[..6].iter().fold(0, |n, f| n << 4 | f))
+}
+
 pub fn clock(seconds: f64) -> String {
     let s = seconds.round() as u64;
     if s >= 60 {
@@ -173,6 +189,18 @@ mod tests {
         assert!(lv < 8);
         assert_eq!(verdict(6, 0.0), "solid");
         assert_eq!(verdict(6, 0.5), "fails");
+    }
+
+    #[test]
+    fn sizes_survive_the_trip() {
+        for n in [0usize, 1, 129, 65535, 0xABCDEF] {
+            let digits = size_digits(n);
+            assert_eq!(digits.len(), SIZE_SYLLABLES);
+            assert_eq!(read_size(&digits), Some(n));
+            let mut bad = digits.clone();
+            bad[3] ^= 1;
+            assert_eq!(read_size(&bad), None);
+        }
     }
 
     #[test]

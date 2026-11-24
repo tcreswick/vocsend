@@ -156,7 +156,7 @@ and `VOCSEND_RECORD` names commands of your own, which must read or write
 raw 16-bit mono samples at 16000 Hz.
 
 To build with no system libraries at all, using only those command-line
-tools: `cargo build --release --no-default-features`.
+tools: `cargo build --release --no-default-features --features cli`.
 
 ### Shell completion
 

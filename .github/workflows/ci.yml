@@ -17,6 +17,6 @@ jobs:
       - name: Build
         run: cargo build --release
       - name: Build without native sound
-        run: cargo build --release --no-default-features --target-dir target/plain
+        run: cargo build --release --no-default-features --features cli --target-dir target/plain
       - name: Help runs
         run: ./target/release/vocsend help > /dev/null

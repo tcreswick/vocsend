@@ -126,6 +126,14 @@ pub mod kind {
     }
 }
 
+/// What a sender says it is doing, in every packet it sends, so that a
+/// mismatch in settings shows up before any data moves.
+pub mod flag {
+    pub const ENCRYPTED: u8 = 1;
+    pub const NEGOTIATED: u8 = 2;
+    pub const STREAMING: u8 = 4;
+}
+
 /// Control syllables (two bits each) in a reply: kind, two arguments and an
 /// eight-bit check.
 pub const REPLY_SYLLABLES: usize = 10;

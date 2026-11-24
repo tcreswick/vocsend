@@ -18,18 +18,26 @@ chacha20poly1305 = "0.11.0"
 cpal = { version = "0.18.2", optional = true }
 flate2 = "1.1.11"
 getrandom = "0.4.3"
-rpassword = "7.5.5"
+rpassword = { version = "7.5.5", optional = true }
 sha2 = "0.11.1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [features]
-# Talk to the system's sound devices directly. Without it (cargo build
-# --no-default-features) vocsend needs no system libraries to build, and uses
-# command-line players and recorders instead.
-default = ["native-audio"]
-native-audio = ["dep:cpal"]
+# native-audio: talk to the system's sound devices directly. Without it
+# (cargo build --no-default-features --features cli) vocsend needs no system
+# libraries to build, and uses command-line players and recorders instead.
+default = ["cli", "native-audio"]
+# The command-line program. Leave it out to use vocsend as a library, for
+# example in a browser, where there is no terminal or sound card to talk to.
+cli = ["dep:rpassword"]
+native-audio = ["cli", "dep:cpal"]
+
+[[bin]]
+name = "vocsend"
+path = "src/main.rs"
+required-features = ["cli"]
 
 [profile.release]
 opt-level = 3

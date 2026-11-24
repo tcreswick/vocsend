@@ -5,16 +5,11 @@ use crate::ui::{self, log};
 use std::io::{BufRead, IsTerminal, Read, Write};
 use vocsend::crypto::Cipher;
 use vocsend::crypto;
+use vocsend::modem::flag::*;
 use vocsend::modem::kind::*;
 use vocsend::modem::{self, level, Packet};
 use vocsend::payload;
 use vocsend::plan::{self, clock, ATTEMPTS, RAMP_LEVELS, RAMP_SYLLABLES, TEST_SYLLABLES, TURNAROUND};
-
-// Flags carried by every packet from the sender, so a mismatch in settings
-// shows up before any data moves.
-const ENCRYPTED: u8 = 1;
-const NEGOTIATED: u8 = 2;
-const STREAMING: u8 = 4;
 
 pub const EXIT_FAILED: i32 = 1;
 pub const EXIT_MODE: i32 = 2;
@@ -71,19 +66,6 @@ fn save_level(lv: usize) {
 
 fn plural(n: usize) -> &'static str {
     if n == 1 { "" } else { "s" }
-}
-
-/// The stream length as control syllables: six 4-bit fields and a check.
-fn size_digits(nbytes: usize) -> Vec<usize> {
-    let mut fields: Vec<usize> = (0..6).rev().map(|i| nbytes >> (4 * i) & 15).collect();
-    fields.push((fields.iter().sum::<usize>() + 9) & 15);
-    fields.iter().flat_map(|f| [f >> 2, f & 3]).collect()
-}
-
-fn read_size(digits: &[usize]) -> Option<usize> {
-    let fields: Vec<usize> = digits.chunks(2).map(|d| d[0] << 2 | d[1]).collect();
-    (fields.len() == 7 && fields[6] == (fields[..6].iter().sum::<usize>() + 9) & 15)
-        .then(|| fields[..6].iter().fold(0, |n, f| n << 4 | f))
 }
 
 // ------------------------------------------------------------------ sender
@@ -149,7 +131,7 @@ impl Sender {
             log(&format!("receiver heard level {try_level} clean; testing it"));
         }
 
-        let size = size_digits(stream_len);
+        let size = plan::size_digits(stream_len);
         let known = plan::known_symbols(try_level, TEST_SYLLABLES, 2);
         self.link.pause(TURNAROUND);
         self.link.send(
@@ -598,7 +580,7 @@ pub fn rx(mut opts: Options) -> i32 {
                 }
                 expected = link
                     .read(modem::control(), 14, None)
-                    .and_then(|d| read_size(&d.iter().map(|s| s.0).collect::<Vec<_>>()))
+                    .and_then(|d| plan::read_size(&d.iter().map(|s| s.0).collect::<Vec<_>>()))
                     .filter(|&n| n > 0);
                 let want = plan::known_symbols(lv, TEST_SYLLABLES, 2);
                 let wrong = match link.read(modem::alphabet(lv), TEST_SYLLABLES, None) {
