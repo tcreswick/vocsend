@@ -12,3 +12,4 @@ pub mod synth;
 pub mod modem;
 pub mod payload;
 pub mod plan;
+pub mod resample;

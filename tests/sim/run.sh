@@ -23,7 +23,8 @@ for side in a b; do
     chmod +x "$WORK/$side/aplay" "$WORK/$side/arecord"
 done
 : > "$WORK/tape-a"; : > "$WORK/tape-b"
-export AIR_T0="$(date +%s.%N)" AIR_NOISE="${4:-0.003}"
+# Use the stand-in speaker and microphone even on a machine with real ones.
+export AIR_T0="$(date +%s.%N)" AIR_NOISE="${4:-0.003}" VOCSEND_AUDIO=commands
 start="$PWD"
 receiver() { (cd "$WORK/rx" && AIR_OUT="$WORK/tape-b" AIR_IN="$WORK/tape-a" PATH="$WORK/b:/usr/bin:/bin" timeout "${TMO:-300}" "$bin" rx $1 > "$WORK/rx.out" 2> "$WORK/rx.log"; echo "rx exit $?" >> "$WORK/rx.log"); }
 sender() { (cd "$start" && AIR_OUT="$WORK/tape-a" AIR_IN="$WORK/tape-b" PATH="$WORK/a:/usr/bin:/bin" timeout "${TMO:-300}" "$bin" tx $1 < "${2:-/dev/null}" > /dev/null 2> "$WORK/tx.log"; echo "tx exit $?" >> "$WORK/tx.log"); }

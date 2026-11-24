@@ -134,19 +134,29 @@ cd vocsend
 cargo build --release
 ```
 
-That produces `target/release/vocsend`. All it needs is a Rust toolchain.
-The dependencies are few, widely used and pure Rust: the RustCrypto
-libraries for encryption and hashing, `flate2` for compression, `getrandom`
-and `rpassword`. The signal processing and error correction are in this
-repository.
+That produces `target/release/vocsend`. It needs a Rust toolchain and, on
+Linux, the ALSA development headers (`libasound2-dev` on Debian and Ubuntu,
+`alsa-lib-devel` on Fedora, `alsa-lib` on Arch).
 
-For sound, vocsend uses tools the system already has:
+The dependencies are few, widely used and pure Rust: `cpal` for sound, the
+RustCrypto libraries for encryption and hashing, `flate2` for compression,
+`getrandom` and `rpassword`. The signal processing and error correction are
+in this repository.
 
-| System | Uses |
-|---|---|
-| Linux | PipeWire (`pw-cat`), PulseAudio (`paplay`, `parec`) or ALSA (`aplay`, `arecord`), whichever is present |
-| macOS, Windows | [SoX](https://sox.sourceforge.net/) (`sox`) |
-| Anything else | set `VOCSEND_PLAY` and `VOCSEND_RECORD` to commands that read or write raw 16-bit mono samples at 16000 Hz |
+### Sound
+
+vocsend talks to the system's sound devices directly: ALSA on Linux (which
+PipeWire and PulseAudio also answer to), CoreAudio on macOS, WASAPI on
+Windows. It uses the default output and input, at whatever rate they run.
+
+If that fails, or if you ask for it with `VOCSEND_AUDIO=commands`, it falls
+back to command-line tools: PipeWire (`pw-cat`), PulseAudio (`paplay`,
+`parec`), ALSA (`aplay`, `arecord`) or SoX (`sox`). Setting `VOCSEND_PLAY`
+and `VOCSEND_RECORD` names commands of your own, which must read or write
+raw 16-bit mono samples at 16000 Hz.
+
+To build with no system libraries at all, using only those command-line
+tools: `cargo build --release --no-default-features`.
 
 ### Shell completion
 

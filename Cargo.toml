@@ -15,10 +15,21 @@ categories = ["command-line-utilities"]
 [dependencies]
 argon2 = "0.6.0"
 chacha20poly1305 = "0.11.0"
+cpal = { version = "0.18.2", optional = true }
 flate2 = "1.1.11"
 getrandom = "0.4.3"
 rpassword = "7.5.5"
 sha2 = "0.11.1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[features]
+# Talk to the system's sound devices directly. Without it (cargo build
+# --no-default-features) vocsend needs no system libraries to build, and uses
+# command-line players and recorders instead.
+default = ["native-audio"]
+native-audio = ["dep:cpal"]
 
 [profile.release]
 opt-level = 3

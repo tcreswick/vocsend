@@ -121,9 +121,11 @@ EXIT STATUS
   4 the two sides' vocsend versions are not compatible
 
 SOUND
-  Uses the system's own tools: PipeWire (pw-cat), PulseAudio (paplay and
-  parec), ALSA (aplay and arecord) or SoX (sox). Set VOCSEND_PLAY and
-  VOCSEND_RECORD to use other commands.",
+  Uses the system's default speaker and microphone directly. If that is
+  not possible it falls back to command-line tools: PipeWire (pw-cat),
+  PulseAudio (paplay and parec), ALSA (aplay and arecord) or SoX (sox).
+  VOCSEND_AUDIO=commands forces the fallback; VOCSEND_PLAY and
+  VOCSEND_RECORD name commands of your own.",
         banner()
     )
 }
