@@ -1,10 +1,12 @@
 name: Release
 
-# Push a tag such as v0.1.0 to build binaries for every system and publish
-# them as a GitHub release.
+# Builds binaries for every system and publishes them as a GitHub release.
+# Either push a tag such as v1.0.0, or press "Run workflow" on the Actions
+# page: that releases the version in Cargo.toml and creates the tag itself.
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -33,6 +35,12 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - name: Work out the version
+        shell: bash
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then tag="$GITHUB_REF_NAME"
+          else tag="v$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"; fi
+          echo "TAG=$tag" >> "$GITHUB_ENV"
       - name: Add the target
         run: rustup target add ${{ matrix.target }}
       - name: Install the ALSA headers
@@ -46,7 +54,7 @@ jobs:
       - name: Package (Unix)
         if: runner.os != 'Windows'
         run: |
-          dir="vocsend-${{ github.ref_name }}-${{ matrix.name }}"
+          dir="vocsend-$TAG-${{ matrix.name }}"
           mkdir "$dir"
           cp "target/${{ matrix.target }}/release/vocsend" README.md LICENSE "$dir/"
           tar czf "$dir.tar.gz" "$dir"
@@ -54,7 +62,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $dir = "vocsend-${{ github.ref_name }}-${{ matrix.name }}"
+          $dir = "vocsend-$env:TAG-${{ matrix.name }}"
           New-Item -ItemType Directory $dir | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/vocsend.exe", README.md, LICENSE $dir
           Compress-Archive -Path $dir -DestinationPath "$dir.zip"
@@ -69,12 +77,21 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+      - name: Work out the version
+        shell: bash
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then tag="$GITHUB_REF_NAME"
+          else tag="v$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"; fi
+          echo "TAG=$tag" >> "$GITHUB_ENV"
       - uses: actions/download-artifact@v4
         with:
+          path: dist
           merge-multiple: true
       - name: Checksums
+        working-directory: dist
         run: sha256sum vocsend-* > SHA256SUMS
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" --repo "${{ github.repository }}" --title "vocsend ${{ github.ref_name }}" --generate-notes vocsend-* SHA256SUMS
+        run: gh release create "$TAG" --repo "${{ github.repository }}" --target "$GITHUB_SHA" --title "vocsend $TAG" --generate-notes dist/*
