@@ -940,7 +940,7 @@ dependencies = [
 
 [[package]]
 name = "vocsend"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "argon2",
  "chacha20poly1305",
