@@ -109,7 +109,7 @@ SPEED LEVELS
   to see a live table of which levels arrive intact between them.
 
 CHECKING IT ARRIVED
-  Both sides print a short fingerprint of the data, such as 3f9a-c21d-77b0.
+  Both sides print a short fingerprint of the data, such as K7QM.
   If they match, both have the same bytes. Every block already carries a
   checksum and error correction, so this is for peace of mind, and for
   one-way transfers, where the sender otherwise hears nothing back.

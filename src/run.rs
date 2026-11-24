@@ -322,7 +322,7 @@ pub fn tx(opts: Options) -> i32 {
         | if opts.negotiate { NEGOTIATED } else { 0 }
         | if streaming { STREAMING } else { 0 };
     if !streaming {
-        log(&format!("fingerprint {} (the receiver should show the same)", crypto::fingerprint(&data)));
+        log(&format!("fingerprint {} (the receiver should show the same)", ui::highlight(&crypto::fingerprint(&data))));
     }
     let mut sender = Sender {
         link: Link::open(true, opts.negotiate),
@@ -697,7 +697,7 @@ pub fn rx(mut opts: Options) -> i32 {
                 return match deliver(name, &data, opts.path.as_deref()) {
                     Ok(summary) => {
                         log(&summary);
-                        log(&format!("fingerprint {} (the sender should show the same)", crypto::fingerprint(&data)));
+                        log(&format!("fingerprint {} (the sender should show the same)", ui::highlight(&crypto::fingerprint(&data))));
                         0
                     }
                     Err(why) => {

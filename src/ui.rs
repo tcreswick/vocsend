@@ -19,6 +19,16 @@ pub fn log(text: &str) {
     }
 }
 
+/// Make a few characters stand out (bold cyan) when writing to a terminal
+/// that has not asked for plain output with NO_COLOR.
+pub fn highlight(text: &str) -> String {
+    if std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none() {
+        format!("\x1b[1;96m{text}\x1b[0m")
+    } else {
+        text.to_string()
+    }
+}
+
 /// An error is shown even in quiet mode.
 pub fn error(text: &str) {
     eprintln!("vocsend: {text}");

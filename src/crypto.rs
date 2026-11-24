@@ -13,10 +13,15 @@ pub const TAG_LEN: usize = 16;
 /// Bytes added to each encrypted block: salt, counter and authentication tag.
 pub const OVERHEAD: usize = SALT_LEN + NONCE_LEN + TAG_LEN;
 
-/// A short fingerprint of some data, for two people to compare by eye.
+/// A short fingerprint of some data, for two people to compare at a glance:
+/// four characters such as `K7QM`, from an alphabet without the look-alikes
+/// I, O, 0 and 1. It carries 20 bits of the data's SHA-256, which is plenty
+/// to catch an accident but is not a defence against deliberate forgery.
 pub fn fingerprint(data: &[u8]) -> String {
+    const ALPHABET: &[u8; 32] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
     let hash = Sha256::digest(data);
-    format!("{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}", hash[0], hash[1], hash[2], hash[3], hash[4], hash[5])
+    let bits = (hash[0] as usize) << 12 | (hash[1] as usize) << 4 | (hash[2] as usize) >> 4;
+    (0..4).rev().map(|i| ALPHABET[(bits >> (5 * i)) & 31] as char).collect()
 }
 
 /// The one-byte tag that stands for a receiver's address on the air.
@@ -130,7 +135,7 @@ mod tests {
 
     #[test]
     fn fingerprints_and_tags() {
-        assert_eq!(fingerprint(b"abc"), "ba78-16bf-8f01");
+        assert_eq!(fingerprint(b"abc"), "ZK6B");
         assert_ne!(fingerprint(b"abc"), fingerprint(b"abd"));
         assert!(address_tag("laptop") != 0 && address_tag("") != 0);
         assert_eq!(address_tag("laptop"), address_tag("laptop"));
